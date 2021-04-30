@@ -1,0 +1,9 @@
+[package]
+name = "e01_file_download"
+version = "0.1.0"
+authors = ["krashanoff <leo@krashanoff.com>"]
+edition = "2018"
+
+[dependencies]
+maguro = { path = "../../" }
+tokio = { version = "1", features = ["rt", "macros", "fs"] }
