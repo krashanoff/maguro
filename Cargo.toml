@@ -6,6 +6,7 @@ authors = ["krashanoff <leo@krashanoff.com>"]
 edition = "2018"
 license = "MIT"
 readme = "README.md"
+homepage = "https://github.com/krashanoff/maguro"
 repository = "https://github.com/krashanoff/maguro"
 categories = ["command-line-utilities", "api-bindings", "multimedia::video"]
 include = [
@@ -15,6 +16,7 @@ include = [
 
 [lib]
 path = "src/lib.rs"
+doctest = false
 
 [[bin]]
 name = "maguro"

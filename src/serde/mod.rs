@@ -1,11 +1,11 @@
 //! Extensions to serde for deserializing unsupported types.
 //!
-//! Provides deserializers for [Duration]s, and for converting
-//! types such as [&str] to [u32], or [&str] to [mime::Mime].
+//! Provides deserializers for [Durations](std::time::Duration),
+//! and for converting types such as [&str] to [u32](std::u32).
 
 pub mod duration {
-    //! Extensions for parsing [Duration]s and their [Option<T>]s from
-    //! strings.
+    //! Extensions for parsing [Durations](Duration) and their
+    //! [Options](Option<T>) from strings.
 
     use serde::{
         de::{Error, Visitor},
@@ -94,7 +94,7 @@ pub mod duration {
 }
 
 pub mod u32 {
-    //! Extensions for parsing `u32` and `Option<u32>` from string types.
+    //! Extensions for parsing [u32] and [Option<u32>](Option<T>) from string types.
 
     use serde::{
         de::{Error, Visitor},

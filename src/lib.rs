@@ -5,8 +5,27 @@
 //!
 //! ## Example
 //!
-//! ```rs
+//! ```
+//! use maguro;
+//! use tokio::fs::OpenOptions;
 //!
+//! // ...
+//!
+//! // Get our video information and location the first format
+//! // available.
+//! let video_info = maguro::get_video_info("VfWgE7D1pYY").await?;
+//! let format = video_info.all_formats().first().cloned()?;
+//!
+//! // Open an asynchronous file handle.
+//! let mut output = OpenOptions::new()
+//!     .read(false)
+//!     .write(true)
+//!     .create(true)
+//!     .open("maguro.mp4")
+//!     .await?;
+//!
+//! // Download the video.
+//! format.download(&mut output).await?;
 //! ```
 
 use ::serde::{Deserialize, Serialize};
@@ -18,7 +37,7 @@ use hyper_tls::HttpsConnector;
 use std::{
     error,
     fmt::{self, Display},
-    str::{self, FromStr},
+    str,
     time::Duration,
 };
 use tokio::{fs::File, io::AsyncWriteExt};
@@ -28,33 +47,9 @@ pub mod serde;
 /// Endpoint to request against.
 const ENDPOINT_URI: &'static str = "https://www.youtube.com/get_video_info";
 
-/// List of video IDs to download.
-/// TODO
-struct Query {
-    ids: Vec<String>,
-}
-
-impl FromStr for Query {
-    type Err = Box<dyn error::Error>;
-
-    /// Parse an input YouTube channel, playlist, video URL
-    /// into a list of video IDs.
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        todo!()
-    }
-}
-
 /// Form an endpoint URI for the given video ID.
 fn endpoint_from_id<T: Display>(id: T) -> String {
     format!("{}?video_id={}", ENDPOINT_URI, id)
-}
-
-/// Form an endpoint URI from a YouTube URL.
-fn endpoint_from_url<T: ToString>(url: T) -> String {
-    if let Some(pos) = url.to_string().find("?video_id=") {
-        let start = pos as u32 + 10;
-    }
-    String::new()
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -89,23 +84,6 @@ pub struct Format {
     )]
     // A stream may not have a defined length.
     approx_duration: Option<Duration>,
-}
-
-/// TODO: trait for all streamable media.
-pub trait Stream {
-    type Quality;
-
-    fn itag(&self) -> u32;
-    fn is_video(&self) -> bool;
-    fn quality(&self) -> Self::Quality;
-    fn mime_type(&self) -> mime::Mime;
-    fn stream_url(&self) -> String;
-}
-
-pub trait Downloader {
-    type Result;
-
-    fn download<T: Stream>(&self, stream: T) -> Self::Result;
 }
 
 impl Format {
@@ -275,7 +253,7 @@ struct InfoWrapper {
     pub player_response: String,
 }
 
-/// Acquires the `VideoInfo` struct for a given video ID.
+/// Acquires the [InfoResponse] struct for a given video ID.
 pub async fn get_video_info(id: &str) -> Result<InfoResponse, Box<dyn error::Error>> {
     let https = HttpsConnector::new();
     let client = Client::builder().build::<_, hyper::Body>(https);
