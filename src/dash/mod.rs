@@ -1,31 +1,47 @@
-//! An ergonomic Rust translation of the DASH-MPD.xsd found at
+//! An ergonomic Rust translation of DASH-MPD, as specified by
 //! [standards.iso.org](https://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD.xsd).
 //!
 //! At present, only the portions that are necessary for maguro to
 //! function are translated. In the future, this process should ideally be
 //! automated.
 
+use crate::serde::mime as mime_ext;
+use mime;
 use serde::{Deserialize, Serialize};
+use std::{cmp::Ordering, fmt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct MPD {
+#[serde(rename = "MPD")]
+/// Root of a DASH-MPEG manifest.
+pub struct Manifest {
     #[serde(rename = "Period")]
     period: Period,
+}
+
+impl Manifest {
+    /// Available adaptations sets for the given media's manifest.
+    pub fn streams(&self) -> Vec<AdaptationSet> {
+        self.period.adaptation_sets.clone()
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Period {
     #[serde(default, rename = "AdaptationSet")]
-    adaptation_sets: Vec<AdaptationSet>,
+    pub adaptation_sets: Vec<AdaptationSet>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct AdaptationSet {
+/// Set of formats available to stream to the given [MIME](mime::Mime) type.
+pub struct AdaptationSet {
     id: u32,
 
-    #[serde(rename = "mimeType")]
-    // TODO: make into a mime::Mime type.
-    mime_type: String,
+    #[serde(
+        rename = "mimeType",
+        deserialize_with = "mime_ext::to_mime",
+        serialize_with = "mime_ext::to_str"
+    )]
+    mime_type: mime::Mime,
 
     #[serde(rename = "subsegmentAlignment")]
     subsegment_alignment: bool,
@@ -37,36 +53,63 @@ struct AdaptationSet {
     representations: Vec<Representation>,
 }
 
+impl fmt::Display for AdaptationSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Adaptation Set: id {}; {}", self.id, self.mime_type)
+    }
+}
+
+impl PartialOrd for AdaptationSet {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AdaptationSet {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialEq for AdaptationSet {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for AdaptationSet {}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Role {
     #[serde(rename = "schemeIdUri")]
-    scheme_id_uri: String,
-    value: String,
+    pub scheme_id_uri: String,
+    pub value: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct SegmentURL {
-    media: String,
+    pub media: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Initialization {
     #[serde(rename = "sourceURL")]
-    source_url: String,
+    pub source_url: String,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// The list of segments
 struct SegmentList {
     #[serde(rename = "Initialization")]
-    initialization: Initialization,
+    pub initialization: Initialization,
 
     #[serde(rename = "SegmentURL")]
-    segment_urls: Vec<SegmentURL>,
+    pub segment_urls: Vec<SegmentURL>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-struct Representation {
+/// A streaming format for some adaptation.
+pub struct Representation {
     id: u32,
 
     codecs: String,
@@ -86,3 +129,33 @@ struct Representation {
     #[serde(rename = "SegmentList")]
     segment_list: SegmentList,
 }
+
+impl fmt::Display for Representation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} - {} - ({:?}x{:?})",
+            self.id, self.codecs, self.width, self.height
+        )
+    }
+}
+
+impl PartialOrd for Representation {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Representation {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialEq for Representation {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for Representation {}

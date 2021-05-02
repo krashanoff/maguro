@@ -1,17 +1,41 @@
-//! Extensions to serde for deserializing unsupported types.
+//! Extensions to serde for deserializing foreign types.
 //!
 //! Provides deserializers for [Durations](std::time::Duration),
 //! and for converting types such as [&str] to [u32](std::u32).
+
+use serde::{
+    de::{Error, Visitor},
+    Deserialize, Deserializer, Serializer,
+};
+
+pub mod mime {
+    //! Extensions for serializing and deserializing [mime::Mime](::mime::Mime).
+
+    use super::*;
+    use ::mime;
+    use std::str::FromStr;
+
+    pub fn to_mime<'de, D>(d: D) -> Result<mime::Mime, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(mime::Mime::from_str(Deserialize::deserialize(d)?).map_err(Error::custom)?)
+    }
+
+    pub fn to_str<S>(m: &mime::Mime, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_str(m.to_string().as_str())
+    }
+}
 
 pub mod duration {
     //! Extensions for parsing [Durations](Duration) and their
     //! [Options](Option<T>) from strings.
 
-    use serde::{
-        de::{Error, Visitor},
-        Deserialize, Deserializer,
-    };
-    use std::{fmt, str, time::Duration};
+    use super::*;
+    use std::{fmt, time::Duration};
 
     enum Unit {
         Seconds,
@@ -90,62 +114,5 @@ pub mod duration {
         D: Deserializer<'de>,
     {
         Ok(deserializer.deserialize_option(DurationOptionVisitor::new(Unit::Seconds))?)
-    }
-}
-
-pub mod u32 {
-    //! Extensions for parsing [u32] and [Option<u32>](Option<T>) from string types.
-
-    use serde::{
-        de::{Error, Visitor},
-        Deserialize, Deserializer,
-    };
-    use std::{fmt, str};
-
-    struct U32OptionVisitor;
-
-    impl<'de> Visitor<'de> for U32OptionVisitor {
-        type Value = Option<u32>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            write!(formatter, "a valid u32 integer")
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let s: &str = Deserialize::deserialize(deserializer)?;
-            Ok(Some(s.parse().map_err(D::Error::custom)?))
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(None)
-        }
-    }
-
-    pub fn from_str<'de, D>(d: D) -> Result<u32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = Deserialize::deserialize(d)?;
-        Ok(s.parse().map_err(D::Error::custom)?)
-    }
-
-    pub fn from_str_option<'de, D>(d: D) -> Result<Option<u32>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(d.deserialize_option(U32OptionVisitor)?)
     }
 }
