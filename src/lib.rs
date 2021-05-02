@@ -42,6 +42,7 @@ use std::{
 };
 use tokio::{fs::File, io::AsyncWriteExt};
 
+pub mod dash;
 pub mod serde;
 
 /// Endpoint to request against.
