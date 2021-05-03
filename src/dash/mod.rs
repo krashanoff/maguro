@@ -10,7 +10,7 @@ use hyper::{self, body::HttpBody};
 use hyper_tls;
 use mime;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, error, fmt};
+use std::{cmp::Ordering, convert::TryFrom, error, fmt};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -22,9 +22,27 @@ pub struct Manifest {
 }
 
 impl Manifest {
-    /// Available adaptations sets for the given media's manifest.
+    /// Available [AdaptationSets](AdaptationSet) for the given media's manifest.
     pub fn streams(&self) -> Vec<AdaptationSet> {
         self.period.adaptation_sets.clone()
+    }
+}
+
+impl TryFrom<&str> for Manifest {
+    type Error = serde_xml_rs::Error;
+
+    /// Attempt to parse an XML [&str] into a [Manifest].
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        serde_xml_rs::from_str(s)
+    }
+}
+
+impl IntoIterator for Manifest {
+    type Item = AdaptationSet;
+    type IntoIter = std::vec::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.streams().into_iter()
     }
 }
 
