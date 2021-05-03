@@ -6,9 +6,12 @@
 //! automated.
 
 use crate::serde::mime as mime_ext;
+use hyper::{self, body::HttpBody};
+use hyper_tls;
 use mime;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, fmt};
+use std::{cmp::Ordering, error, fmt};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename = "MPD")]
@@ -86,9 +89,27 @@ struct Role {
     pub value: String,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Eq)]
 struct SegmentURL {
     pub media: String,
+}
+
+impl PartialOrd for SegmentURL {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SegmentURL {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.media.cmp(&other.media)
+    }
+}
+
+impl PartialEq for SegmentURL {
+    fn eq(&self, other: &Self) -> bool {
+        self.media == other.media
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -128,6 +149,43 @@ pub struct Representation {
 
     #[serde(rename = "SegmentList")]
     segment_list: SegmentList,
+}
+
+impl Representation {
+    /// Vector of the URLs of each chunk **in the order they should
+    /// be downloaded in**.
+    pub fn segment_urls(&self) -> Vec<String> {
+        let mut urls = Vec::new();
+
+        urls.push(format!(
+            "{}/{}",
+            self.base_url, self.segment_list.initialization.source_url
+        ));
+        for segment in self.segment_list.segment_urls.iter() {
+            urls.push(format!("{}/{}", self.base_url, segment.media));
+        }
+
+        urls
+    }
+
+    /// Asynchronously downloads the given [Representation] to an [AsyncWriter](AsyncWrite).
+    pub async fn download<T: AsyncWrite + Unpin>(
+        &self,
+        writer: &mut T,
+    ) -> Result<(), Box<dyn error::Error + Send + Sync>> {
+        let https = hyper_tls::HttpsConnector::new();
+        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+
+        for segment_url in self.segment_urls() {
+            let mut res = client.get(segment_url.parse().unwrap()).await?;
+
+            while let Some(chunk) = res.body_mut().data().await {
+                writer.write(&chunk?).await?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl fmt::Display for Representation {
