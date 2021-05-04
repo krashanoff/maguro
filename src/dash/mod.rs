@@ -6,11 +6,14 @@
 //! automated.
 
 use crate::serde::mime as mime_ext;
-use hyper::{self, body::HttpBody};
+use hyper::{
+    self,
+    body::{self, HttpBody},
+};
 use hyper_tls;
 use mime;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, convert::TryFrom, error, fmt};
+use std::{cmp::Ordering, convert::TryFrom, error, fmt, str};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -25,6 +28,21 @@ impl Manifest {
     /// Available [AdaptationSets](AdaptationSet) for the given media's manifest.
     pub fn streams(&self) -> Vec<AdaptationSet> {
         self.period.adaptation_sets.clone()
+    }
+
+    #[cfg(feature = "client")]
+    /// Acquires a [Manifest] from the provided URL source.
+    pub async fn from_url<T: ToString>(
+        url: &T,
+    ) -> Result<Self, Box<dyn error::Error + Send + Sync>> {
+        let https = hyper_tls::HttpsConnector::new();
+        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+
+        let mut res = client.get(url.to_string().parse().unwrap()).await?;
+        let body = body::to_bytes(res.body_mut()).await?.to_vec();
+
+        // TODO: remove `unwrap`.
+        Ok(Self::try_from(str::from_utf8(body.as_slice())?).unwrap())
     }
 }
 
