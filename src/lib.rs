@@ -3,6 +3,17 @@
 //! An async library for downloading and streaming media, with
 //! out-of-the-box support for YouTube.
 //!
+//! ## Features
+//!
+//! maguro comes out of the box with functions for downloading DASH-MPEG
+//! manifests.
+//!
+//! By default, maguro's default implementations built on [hyper](https://hyper.rs/)
+//! are used. To disable them, set your features to anything else.
+//!
+//! If you would like to implement your own downloader functions, change
+//! your features to `["custom"]`.
+//!
 //! ## Example
 //!
 //! ```
@@ -28,244 +39,171 @@
 //! format.download(&mut output).await?;
 //! ```
 
-use ::serde::{Deserialize, Serialize};
-use hyper::{
-    body::{self, HttpBody},
-    Client,
-};
-use hyper_tls::HttpsConnector;
-use std::{
-    error,
-    fmt::{self, Display},
-    str,
-    time::Duration,
-};
-use tokio::{fs::File, io::AsyncWriteExt};
+use async_trait::async_trait;
+use std::{error, str::FromStr};
 
 pub mod dash;
 pub mod serde;
 
-/// Endpoint to request against.
-const ENDPOINT_URI: &'static str = "https://www.youtube.com/get_video_info";
+#[async_trait]
+/// Conversion from [String] to a [Query] against a [Downloader]. Type signatures
+/// may be imposing, but this is an [async_trait].
+pub trait Query: FromStr + Send + Sync {
+    /// Type returned as result of a successful Query. Must be [String] convertible.
+    type URLType: ToString + Send;
 
-/// Form an endpoint URI for the given video ID.
-fn endpoint_from_id<T: Display>(id: T) -> String {
-    format!("{}?video_id={}", ENDPOINT_URI, id)
+    /// What is returned in event of a failed [query](Self::query) against this [Downloader].
+    type QueryError: 'static + error::Error + Send + Sync;
+
+    #[cfg(feature = "client")]
+    /// Parse an input [String] into a vector of URLs. In the event that
+    /// a vector of URLs can only be formed *in reference to*
+    async fn to_vec(&self) -> Result<Vec<Self::URLType>, Self::QueryError>;
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-/// Describes a single streaming format for a YouTube video.
-pub struct Format {
-    itag: u32,
-    url: String,
+#[async_trait]
+/// A type that is capable of downloading a video via maguro. Type signatures
+/// may be imposing, but this is an [async_trait].
+pub trait Downloader {
+    /// Bound on what is accepted as a query for this [Downloader]. Queries
+    /// **must** be parsable from a [&str], and convertible (once parsed)
+    /// to a set of URLs pointing to DASH-MPEG Manifests, as described in
+    /// [crate::dash]. URLs **must be convertible to [Strings](String)**.
+    type Query: crate::Query;
 
-    // Width and height are optional in the case formats
-    // are audio only.
-    width: Option<u32>,
-    height: Option<u32>,
+    /// Create a new [Downloader].
+    fn new() -> Self;
 
-    #[serde(rename = "mimeType")]
-    mime_type: String,
-
-    #[serde(
-        default,
-        rename = "contentLength",
-        deserialize_with = "serde::u32::from_str_option"
-    )]
-    // A stream may not have a defined size.
-    content_length: Option<u32>,
-
-    quality: String,
-    fps: Option<u32>,
-
-    #[serde(
-        default,
-        rename = "approxDurationMs",
-        deserialize_with = "serde::duration::from_millis_option"
-    )]
-    // A stream may not have a defined length.
-    approx_duration: Option<Duration>,
-}
-
-impl Format {
-    /// Whether the given streaming format is a video.
-    pub fn is_video(&self) -> bool {
-        match self.width {
-            Some(_) => true,
-            None => false,
-        }
-    }
-
-    pub fn itag(&self) -> u32 {
-        self.itag
-    }
-
-    pub fn size(&self) -> Option<u32> {
-        self.content_length.clone()
-    }
-
-    /// Read the entire YouTube video into a vector.
-    pub async fn to_vec(&self) -> Result<Vec<u8>, Box<dyn error::Error + Send + Sync>> {
-        self.to_vec_callback(|_| Ok(())).await
-    }
-
-    /// Downloads the entire YouTube video in chunks with the given closure.
-    /// On receipt of a new chunk of bytes, it calls the closure.
-    pub async fn to_vec_callback<T>(
+    #[cfg(feature = "client")]
+    /// Given some [Query](Self::Query), attempt to acquire the set of [dash::Manifest] for the ID,
+    /// channel, video, or otherwise.
+    async fn query(
         &self,
-        on_chunk: T,
-    ) -> Result<Vec<u8>, Box<dyn error::Error + Send + Sync>>
-    where
-        T: Fn(Vec<u8>) -> Result<(), Box<dyn error::Error + Send + Sync>>,
-    {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, hyper::Body>(https);
-
-        let mut res = client.get(self.url.parse().unwrap()).await.unwrap();
-
-        let mut v: Vec<u8> = Vec::new();
-        while let Some(chunk) = res.body_mut().data().await {
-            let as_bytes: Vec<u8> = chunk?.iter().cloned().collect();
-            on_chunk(as_bytes.clone())?;
-            v.extend(as_bytes.iter());
+        query: Self::Query,
+    ) -> Result<Vec<dash::Manifest>, Box<dyn error::Error + Send + Sync>> {
+        let mut manifests = Vec::new();
+        let urls = query.to_vec().await?;
+        for url_type in urls {
+            let url = url_type.to_string();
+            manifests.push(dash::Manifest::from_url(&url).await?)
         }
-        Ok(v)
+        Ok(manifests)
     }
+}
 
-    /// Downloads the entire YouTube video into a `File`.
-    pub async fn download(
-        &self,
-        dest: &mut File,
-    ) -> Result<(), Box<dyn error::Error + Send + Sync>> {
-        let https = HttpsConnector::new();
-        let client = Client::builder().build::<_, hyper::Body>(https);
+pub mod yt {
+    //! Implementation of a maguro [Downloader] for YouTube.
 
-        let mut res = client.get(self.url.parse().unwrap()).await.unwrap();
+    use crate::dash;
+    use async_trait::async_trait;
+    use hyper::{
+        body::{self, HttpBody},
+        Client,
+    };
+    use hyper_tls::HttpsConnector;
+    use serde::Deserialize;
+    use std::{error, fmt::{self, Formatter, Display}, str::{self, FromStr}, time::Duration, vec};
+    use tokio::{fs::File, io::AsyncWriteExt};
 
-        while let Some(chunk) = res.body_mut().data().await {
-            dest.write(&chunk?).await?;
+    /// Endpoint to request against.
+    const ENDPOINT_URI: &'static str = "https://www.youtube.com/get_video_info";
+
+    /// Query for a single YouTube video by its ID.
+    #[derive(Debug, Clone)]
+    pub struct YouTubeQuery(String);
+
+    #[derive(Debug, Clone)]
+    pub struct QueryError(String);
+
+    impl error::Error for QueryError {}
+    impl Display for QueryError {
+        fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+            write!(f, "{}", self.0)
         }
-
-        Ok(())
-    }
-}
-
-impl Display for Format {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "itag: {:03}\tQuality: {}\tMime Type: {}",
-            self.itag, self.quality, self.mime_type
-        )
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-/// The set of sources available to download a YouTube
-/// video with.
-pub struct StreamingData {
-    #[serde(
-        rename = "expiresInSeconds",
-        deserialize_with = "serde::duration::from_secs"
-    )]
-    expires_in_seconds: Duration,
-
-    // In the case of streams, the `formats` field is empty.
-    formats: Option<Vec<Format>>,
-
-    #[serde(rename = "adaptiveFormats")]
-    adaptive_formats: Vec<Format>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-/// Details about some YouTube video.
-pub struct VideoDetails {
-    #[serde(rename = "videoId")]
-    video_id: String,
-
-    title: String,
-
-    #[serde(rename = "author")]
-    author: String,
-
-    #[serde(
-        rename = "lengthSeconds",
-        deserialize_with = "serde::duration::from_secs_option"
-    )]
-    approx_length: Option<Duration>,
-
-    #[serde(rename = "viewCount", deserialize_with = "serde::u32::from_str")]
-    views: u32,
-
-    #[serde(rename = "isPrivate")]
-    private: bool,
-
-    #[serde(rename = "isLiveContent")]
-    live: bool,
-}
-
-impl VideoDetails {
-    pub fn id(&self) -> String {
-        self.video_id.clone()
-    }
-}
-
-#[derive(Deserialize, Clone, Debug)]
-/// YouTube get_video_info response.
-pub struct InfoResponse {
-    #[serde(rename = "streamingData")]
-    streaming_data: StreamingData,
-
-    #[serde(rename = "videoDetails")]
-    video_details: VideoDetails,
-}
-
-impl InfoResponse {
-    pub fn formats(&self) -> Option<Vec<Format>> {
-        self.streaming_data.formats.clone()
     }
 
-    pub fn adaptive_formats(&self) -> Vec<Format> {
-        self.streaming_data.adaptive_formats.clone()
-    }
+    #[async_trait]
+    impl crate::Query for YouTubeQuery {
+        type URLType = String;
+        type QueryError = QueryError;
 
-    pub fn details(&self) -> VideoDetails {
-        self.video_details.clone()
-    }
-
-    /// Returns a vector of all formats available for the given
-    /// video.
-    pub fn all_formats(&self) -> Vec<Format> {
-        if let Some(fmts) = self.formats() {
-            return fmts
-                .iter()
-                .cloned()
-                .chain(self.adaptive_formats().iter().cloned())
-                .collect();
+        async fn to_vec(&self) -> Result<Vec<Self::URLType>, Self::QueryError> {
+            let https = hyper_tls::HttpsConnector::new();
+            let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+    
+            let mut res = client.get("1uLUoECy72c".to_string().parse().unwrap()).await?;
+            let body = body::to_bytes(res.body_mut()).await?.to_vec();
+    
+            // TODO: remove `unwrap`.
+            todo!()
         }
-        self.adaptive_formats().iter().cloned().collect()
     }
-}
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-/// Wrapper describing the outermost URL-encoded parameters of
-/// a get_video_info response.
-struct InfoWrapper {
-    pub player_response: String,
-}
+    impl FromStr for YouTubeQuery {
+        type Err = &'static str;
 
-/// Acquires the [InfoResponse] struct for a given video ID.
-pub async fn get_video_info(id: &str) -> Result<InfoResponse, Box<dyn error::Error>> {
-    let https = HttpsConnector::new();
-    let client = Client::builder().build::<_, hyper::Body>(https);
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            Ok(Self("test".to_string()))
+        }
+    }
 
-    let mut res = client
-        .get(endpoint_from_id(id).parse().unwrap())
-        .await
-        .unwrap();
-    let body = body::to_bytes(res.body_mut()).await.unwrap();
+    pub struct Downloader;
 
-    let stream_info: InfoResponse =
-        serde_json::from_str(&serde_urlencoded::from_bytes::<InfoWrapper>(&body)?.player_response)?;
-    Ok(stream_info)
+    impl crate::Downloader for Downloader {
+        type Query = YouTubeQuery;
+
+        fn new() -> Self {
+            Self {}
+        }
+    }
+
+    #[derive(Deserialize, Clone, Debug)]
+    /// Wrapper describing the outermost URL-encoded parameters of
+    /// a get_video_info response.
+    struct InfoWrapper {
+        pub player_response: String,
+    }
+
+    #[derive(Deserialize, Clone, Debug)]
+    /// YouTube get_video_info response.
+    struct InfoResponse {
+        #[serde(rename = "streamingData")]
+        streaming_data: StreamingData,
+
+        #[serde(rename = "videoDetails")]
+        video_details: VideoDetails,
+    }
+
+    #[derive(Deserialize, Clone, Debug)]
+    struct StreamingData {
+        #[serde(rename = "dashManifestUrl")]
+        dash_manifest_url: String,
+    }
+
+    #[derive(Deserialize, Clone, Debug)]
+    /// Details about some YouTube video.
+    pub struct VideoDetails {
+        #[serde(rename = "videoId")]
+        video_id: String,
+
+        title: String,
+
+        #[serde(rename = "author")]
+        author: String,
+
+        #[serde(
+            rename = "lengthSeconds",
+            deserialize_with = "crate::serde::duration::from_secs_option"
+        )]
+        approx_length: Option<Duration>,
+
+        #[serde(rename = "viewCount")]
+        views: u32,
+
+        #[serde(rename = "isPrivate")]
+        private: bool,
+
+        #[serde(rename = "isLiveContent")]
+        live: bool,
+    }
 }
