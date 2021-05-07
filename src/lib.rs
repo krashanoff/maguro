@@ -53,12 +53,12 @@ pub trait Query: FromStr + Send + Sync {
     type URLType: ToString + Send;
 
     /// What is returned in event of a failed [query](Self::query) against this [Downloader].
-    type QueryError: 'static + error::Error + Send + Sync;
+    // type QueryError: ;
 
     #[cfg(feature = "client")]
     /// Parse an input [String] into a vector of URLs. In the event that
-    /// a vector of URLs can only be formed *in reference to*
-    async fn to_vec(&self) -> Result<Vec<Self::URLType>, Self::QueryError>;
+    /// a vector of URLs can only be formed *in reference to* some live asset.
+    async fn to_vec(&self) -> Result<Vec<Self::URLType>, Box<dyn error::Error + Send + Sync>>;
 }
 
 #[async_trait]
@@ -94,16 +94,16 @@ pub trait Downloader {
 pub mod yt {
     //! Implementation of a maguro [Downloader] for YouTube.
 
-    use crate::dash;
     use async_trait::async_trait;
-    use hyper::{
-        body::{self, HttpBody},
-        Client,
-    };
-    use hyper_tls::HttpsConnector;
+    use hyper::{self, body};
+    use hyper_tls;
     use serde::Deserialize;
-    use std::{error, fmt::{self, Formatter, Display}, str::{self, FromStr}, time::Duration, vec};
-    use tokio::{fs::File, io::AsyncWriteExt};
+    use std::{
+        error,
+        fmt::{self, Display, Formatter},
+        str::{self, FromStr},
+        time::Duration,
+    };
 
     /// Endpoint to request against.
     const ENDPOINT_URI: &'static str = "https://www.youtube.com/get_video_info";
@@ -125,17 +125,18 @@ pub mod yt {
     #[async_trait]
     impl crate::Query for YouTubeQuery {
         type URLType = String;
-        type QueryError = QueryError;
 
-        async fn to_vec(&self) -> Result<Vec<Self::URLType>, Self::QueryError> {
+        async fn to_vec(&self) -> Result<Vec<Self::URLType>, Box<dyn error::Error + Send + Sync>> {
             let https = hyper_tls::HttpsConnector::new();
             let client = hyper::Client::builder().build::<_, hyper::Body>(https);
-    
-            let mut res = client.get("1uLUoECy72c".to_string().parse().unwrap()).await?;
-            let body = body::to_bytes(res.body_mut()).await?.to_vec();
-    
-            // TODO: remove `unwrap`.
-            todo!()
+
+            let mut res = client.get(self.0.parse().unwrap()).await?;
+            let resp: InfoWrapper = serde_urlencoded::from_bytes(
+                body::to_bytes(res.body_mut()).await?.to_vec().as_slice(),
+            )?;
+            let info: InfoResponse = serde_json::from_str(&resp.player_response)?;
+
+            Ok(vec![info.streaming_data.dash_manifest_url])
         }
     }
 
