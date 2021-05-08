@@ -3,19 +3,85 @@
 //! Provides deserializers for [Durations](std::time::Duration),
 //! and for converting types such as [&str] to [u32](std::u32).
 
+use serde::{
+    de::{Error, Visitor},
+    Deserialize, Deserializer,
+};
+
+pub mod mime {
+    //! Extensions for serializing and deserializing [mime::Mime](::mime::Mime).
+
+    use super::*;
+    use ::mime;
+    use std::{fmt, str::FromStr};
+
+    struct MimeOptionVisitor;
+
+    impl<'de> Visitor<'de> for MimeOptionVisitor {
+        type Value = Option<mime::Mime>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            write!(formatter, "a valid MIME type string")
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s: &str = Deserialize::deserialize(deserializer)?;
+            Ok(Some(mime::Mime::from_str(s).map_err(Error::custom)?))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+    }
+
+    pub fn from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: &str = Deserialize::deserialize(deserializer)?;
+        Ok(deserializer.deserialize_option(MimeOptionVisitor)?)
+    }
+}
+
 pub mod duration {
     //! Extensions for parsing [Durations](Duration) and their
     //! [Options](Option<T>) from strings.
 
-    use serde::{
-        de::{Error, Visitor},
-        Deserialize, Deserializer,
+    use super::*;
+    use std::{
+        fmt::{self, Display},
+        time::Duration,
     };
-    use std::{fmt, str, time::Duration};
 
     enum Unit {
         Seconds,
         Millis,
+    }
+
+    impl Display for Unit {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                f,
+                "{}",
+                match self {
+                    &Unit::Seconds => "seconds",
+                    &Unit::Millis => "milliseconds",
+                }
+            )
+        }
     }
 
     struct DurationOptionVisitor {
@@ -32,7 +98,7 @@ pub mod duration {
         type Value = Option<Duration>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            write!(formatter, "a duration in seconds")
+            write!(formatter, "a duration in {}", self.units)
         }
 
         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
