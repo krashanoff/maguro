@@ -40,25 +40,50 @@
 //! ```
 
 use async_trait::async_trait;
-use std::{error, str::FromStr};
+use std::{
+    fmt::{self, Display},
+    str::FromStr,
+};
 
 pub mod dash;
-pub mod serde;
+mod serde;
+
+#[derive(Debug, Clone)]
+/// Error returned from a [Downloader] operation.
+pub struct Error(Option<String>);
+
+impl Error {
+    pub fn custom<T: Display>(e: T) -> Self {
+        Self(Some(e.to_string()))
+    }
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "custom: {}",
+            match &self.0 {
+                Some(msg) => msg.as_str(),
+                None => "unknown querying error",
+            }
+        )
+    }
+}
 
 #[async_trait]
 /// Conversion from [String] to a [Query] against a [Downloader]. Type signatures
 /// may be imposing, but this is an [async_trait].
 pub trait Query: FromStr + Send + Sync {
-    /// Type returned as result of a successful Query. Must be [String] convertible.
-    type URLType: ToString + Send;
+    /// Type returned as result of a successful query. Must be [String] convertible.
+    type URL: ToString + Send;
 
-    /// What is returned in event of a failed [query](Self::query) against this [Downloader].
-    // type QueryError: ;
+    type Error: Display + Send;
 
     #[cfg(feature = "client")]
     /// Parse an input [String] into a vector of URLs. In the event that
     /// a vector of URLs can only be formed *in reference to* some live asset.
-    async fn to_vec(&self) -> Result<Vec<Self::URLType>, Box<dyn error::Error + Send + Sync>>;
+    async fn to_urls(&self) -> Result<Vec<Self::URL>, Self::Error>;
 }
 
 #[async_trait]
@@ -69,23 +94,24 @@ pub trait Downloader {
     /// **must** be parsable from a [&str], and convertible (once parsed)
     /// to a set of URLs pointing to DASH-MPEG Manifests, as described in
     /// [crate::dash]. URLs **must be convertible to [Strings](String)**.
-    type Query: crate::Query;
+    type Query: Query;
 
     /// Create a new [Downloader].
     fn new() -> Self;
 
     #[cfg(feature = "client")]
-    /// Given some [Query](Self::Query), attempt to acquire the set of [dash::Manifest] for the ID,
-    /// channel, video, or otherwise.
-    async fn query(
-        &self,
-        query: Self::Query,
-    ) -> Result<Vec<dash::Manifest>, Box<dyn error::Error + Send + Sync>> {
+    /// Executes some [Query](Self::Query) to acquire its corresponding set of
+    /// [Manifests](Manifest).
+    async fn query(&self, query: Self::Query) -> Result<Vec<dash::Manifest>, Error> {
+        let urls = query.to_urls().await.map_err(Error::custom)?;
         let mut manifests = Vec::new();
-        let urls = query.to_vec().await?;
         for url_type in urls {
             let url = url_type.to_string();
-            manifests.push(dash::Manifest::from_url(&url).await?)
+            manifests.push(
+                dash::Manifest::from_url(&url)
+                    .await
+                    .map_err(Error::custom)?,
+            )
         }
         Ok(manifests)
     }
@@ -124,17 +150,27 @@ pub mod yt {
 
     #[async_trait]
     impl crate::Query for YouTubeQuery {
-        type URLType = String;
+        type URL = String;
+        type Error = crate::Error;
 
-        async fn to_vec(&self) -> Result<Vec<Self::URLType>, Box<dyn error::Error + Send + Sync>> {
+        async fn to_urls(&self) -> Result<Vec<Self::URL>, Self::Error> {
             let https = hyper_tls::HttpsConnector::new();
             let client = hyper::Client::builder().build::<_, hyper::Body>(https);
 
-            let mut res = client.get(self.0.parse().unwrap()).await?;
+            let mut res = client
+                .get(self.0.parse().unwrap())
+                .await
+                .map_err(crate::Error::custom)?;
             let resp: InfoWrapper = serde_urlencoded::from_bytes(
-                body::to_bytes(res.body_mut()).await?.to_vec().as_slice(),
-            )?;
-            let info: InfoResponse = serde_json::from_str(&resp.player_response)?;
+                body::to_bytes(res.body_mut())
+                    .await
+                    .map_err(crate::Error::custom)?
+                    .to_vec()
+                    .as_slice(),
+            )
+            .map_err(crate::Error::custom)?;
+            let info: InfoResponse =
+                serde_json::from_str(&resp.player_response).map_err(crate::Error::custom)?;
 
             Ok(vec![info.streaming_data.dash_manifest_url])
         }
@@ -144,7 +180,7 @@ pub mod yt {
         type Err = &'static str;
 
         fn from_str(s: &str) -> Result<Self, Self::Err> {
-            Ok(Self("test".to_string()))
+            todo!()
         }
     }
 
