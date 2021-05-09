@@ -5,7 +5,7 @@
 
 use serde::{
     de::{Error, Visitor},
-    Deserialize, Deserializer, Serializer,
+    Deserialize, Deserializer,
 };
 
 pub mod mime {
@@ -13,20 +13,65 @@ pub mod mime {
 
     use super::*;
     use ::mime;
-    use std::str::FromStr;
+    use serde::Serializer;
+    use std::{fmt, str::FromStr};
 
-    pub fn to_mime<'de, D>(d: D) -> Result<mime::Mime, D::Error>
+    struct MimeOptionVisitor;
+
+    impl<'de> Visitor<'de> for MimeOptionVisitor {
+        type Value = Option<mime::Mime>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            write!(formatter, "a valid MIME type string")
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s: String = Deserialize::deserialize(deserializer)?;
+            Ok(Some(mime::Mime::from_str(s.as_str()).map_err(Error::custom)?))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+    }
+
+    /// Deserialize an `Option<mime::Mime>` from a string.
+    pub fn option_from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(mime::Mime::from_str(Deserialize::deserialize(d)?).map_err(Error::custom)?)
+        Ok(deserializer.deserialize_option(MimeOptionVisitor)?)
     }
 
+    /// Serialize a [mime::Mime] to a string.
     pub fn to_str<S>(m: &mime::Mime, s: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
         s.serialize_str(m.to_string().as_str())
+    }
+
+    pub fn option_to_str<S>(m: &Option<mime::Mime>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match m {
+            Some(m) => s.serialize_some(&m.to_string()),
+            None => s.serialize_none(),
+        }
     }
 }
 
@@ -35,11 +80,27 @@ pub mod duration {
     //! [Options](Option<T>) from strings.
 
     use super::*;
-    use std::{fmt, time::Duration};
+    use std::{
+        fmt::{self, Display},
+        time::Duration,
+    };
 
     enum Unit {
         Seconds,
         Millis,
+    }
+
+    impl Display for Unit {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(
+                f,
+                "{}",
+                match self {
+                    &Unit::Seconds => "seconds",
+                    &Unit::Millis => "milliseconds",
+                }
+            )
+        }
     }
 
     struct DurationOptionVisitor {
@@ -56,7 +117,7 @@ pub mod duration {
         type Value = Option<Duration>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            write!(formatter, "a duration in seconds")
+            write!(formatter, "a duration in {}", self.units)
         }
 
         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>

@@ -1,27 +1,56 @@
 //! An ergonomic Rust translation of DASH-MPD, as specified by
-//! [standards.iso.org](https://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD.xsd).
+//! [standards.iso.org](https://standards.iso.org/ittf/PubliclyAvailableStandards/MPEG-DASH_schema_files/DASH-MPD-edition2.xsd).
 //!
 //! At present, only the portions that are necessary for maguro to
 //! function are translated. In the future, this process should ideally be
 //! automated.
 
-use crate::serde::mime as mime_ext;
-use hyper::{
-    self,
-    body::{self, HttpBody},
-};
+use hyper::{self, body};
 use hyper_tls;
-use mime;
 use serde::{Deserialize, Serialize};
-use std::{cmp::Ordering, convert::TryFrom, error, fmt, str};
-use tokio::io::{AsyncWrite, AsyncWriteExt};
+use std::{convert::TryFrom, error, iter::FromIterator, str};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename = "MPD")]
-/// Root of a DASH-MPEG manifest.
+/// Entry point; root of a DASH-MPEG manifest.
 pub struct Manifest {
     #[serde(rename = "Period")]
-    period: Period,
+    periods: Vec<Period>,
+
+    #[serde(rename = "type")]
+    mpd_type: String,
+}
+
+impl Manifest {
+    #[cfg(feature = "client")]
+    /// Acquires a [Manifest] from the provided URL source.
+    pub async fn from_url<T: ToString>(
+        url: &T,
+    ) -> Result<Self, Box<dyn error::Error + Send + Sync>> {
+        let https = hyper_tls::HttpsConnector::new();
+        let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+
+        let mut res = client.get(url.to_string().parse().unwrap()).await?;
+        let body = String::from_iter(
+            body::to_bytes(res.body_mut())
+                .await?
+                .to_vec()
+                .iter()
+                .map(|e| char::from(e.clone()))
+                .filter(|e| e.is_ascii()),
+        );
+
+        Ok(Self::try_from(body.as_str())?)
+    }
+}
+
+impl TryFrom<&str> for Manifest {
+    type Error = serde_xml_rs::Error;
+
+    /// Attempt to parse an XML [&str] into a [Manifest].
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        serde_xml_rs::from_str(s)
+    }
 }
 
 impl Manifest {
@@ -71,22 +100,26 @@ struct Period {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
-/// Set of formats available to stream to the given [MIME](mime::Mime) type.
+/// Set of formats available to stream for the given [MIME](mime::Mime) type.
 pub struct AdaptationSet {
-    id: u32,
+    #[serde(rename = "segmentAlignment")]
+    segment_alignment: Option<bool>,
+
+    id: Option<u32>,
 
     #[serde(
+        default,
         rename = "mimeType",
-        deserialize_with = "mime_ext::to_mime",
-        serialize_with = "mime_ext::to_str"
+        deserialize_with = "crate::serde::mime::option_from_str",
+        serialize_with = "crate::serde::mime::option_to_str",
     )]
-    mime_type: mime::Mime,
+    mime_type: Option<mime::Mime>,
 
     #[serde(rename = "subsegmentAlignment")]
-    subsegment_alignment: bool,
+    subsegment_alignment: Option<bool>,
 
     #[serde(rename = "Role")]
-    role: Role,
+    role: Option<Role>,
 
     #[serde(rename = "Representation")]
     representations: Vec<Representation>,
@@ -130,24 +163,6 @@ struct SegmentURL {
     pub media: String,
 }
 
-impl PartialOrd for SegmentURL {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for SegmentURL {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.media.cmp(&other.media)
-    }
-}
-
-impl PartialEq for SegmentURL {
-    fn eq(&self, other: &Self) -> bool {
-        self.media == other.media
-    }
-}
-
 #[derive(Serialize, Deserialize, Debug, Clone)]
 struct Initialization {
     #[serde(rename = "sourceURL")]
@@ -167,24 +182,74 @@ struct SegmentList {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 /// A streaming format for some adaptation.
 pub struct Representation {
-    id: u32,
-
-    codecs: String,
-
-    #[serde(rename = "audioSamplingRate")]
-    audio_sampling_rate: Option<u32>,
-
+    // RepresentationBaseType
+    profiles: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    sar: Option<String>,
 
     #[serde(rename = "frameRate")]
     frame_rate: Option<u32>,
 
+    #[serde(
+        default,
+        rename = "mimeType",
+        deserialize_with = "crate::serde::mime::option_from_str",
+        serialize_with = "crate::serde::mime::option_to_str",
+    )]
+    mime_type: Option<mime::Mime>,
+
+    // Subelements
     #[serde(rename = "BaseURL")]
-    base_url: String,
+    base_urls: Option<Vec<String>>,
+
+    #[serde(rename = "SubRepresentation")]
+    sub_representations: Option<Vec<Representation>>,
+
+    // TODO
+    #[serde(rename = "SegmentBase")]
+    segment_base: Option<SegmentURL>,
 
     #[serde(rename = "SegmentList")]
-    segment_list: SegmentList,
+    segment_list: Option<SegmentList>,
+
+    #[serde(rename = "SegmentTemplate")]
+    segment_template: Option<SegmentURL>,
+
+    // Attributes
+    id: String,
+    bandwidth: u32,
+
+    #[serde(rename = "qualityRanking")]
+    quality_ranking: Option<u32>,
+
+    #[serde(rename = "dependencyId")]
+    dependency_id: Option<String>,
+
+    #[serde(rename = "mediaStreamStructureId")]
+    media_stream_structure_id: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    /// Tests against a known simple multi-resolution manifest.
+    async fn from_url() {
+        match Manifest::from_url(
+            &"https://dash.akamaized.net/dash264/TestCases/2c/qualcomm/1/MultiResMPEG2.mpd",
+        )
+        .await
+        {
+            Ok(m) => m,
+            Err(e) => {
+                println!("Failed to fetch valid manifest! {}", e);
+                assert!(false);
+                return;
+            }
+        };
+    }
 }
 
 impl Representation {
