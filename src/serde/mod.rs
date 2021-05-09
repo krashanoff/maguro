@@ -1,4 +1,4 @@
-//! Extensions to serde for deserializing unsupported types.
+//! Extensions to serde for deserializing foreign types.
 //!
 //! Provides deserializers for [Durations](std::time::Duration),
 //! and for converting types such as [&str] to [u32](std::u32).
@@ -13,6 +13,7 @@ pub mod mime {
 
     use super::*;
     use ::mime;
+    use serde::Serializer;
     use std::{fmt, str::FromStr};
 
     struct MimeOptionVisitor;
@@ -28,8 +29,8 @@ pub mod mime {
         where
             D: Deserializer<'de>,
         {
-            let s: &str = Deserialize::deserialize(deserializer)?;
-            Ok(Some(mime::Mime::from_str(s).map_err(Error::custom)?))
+            let s: String = Deserialize::deserialize(deserializer)?;
+            Ok(Some(mime::Mime::from_str(s.as_str()).map_err(Error::custom)?))
         }
 
         fn visit_none<E>(self) -> Result<Self::Value, E>
@@ -47,12 +48,30 @@ pub mod mime {
         }
     }
 
-    pub fn from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
+    /// Deserialize an `Option<mime::Mime>` from a string.
+    pub fn option_from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
     where
         D: Deserializer<'de>,
     {
-        let s: &str = Deserialize::deserialize(deserializer)?;
         Ok(deserializer.deserialize_option(MimeOptionVisitor)?)
+    }
+
+    /// Serialize a [mime::Mime] to a string.
+    pub fn to_str<S>(m: &mime::Mime, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        s.serialize_str(m.to_string().as_str())
+    }
+
+    pub fn option_to_str<S>(m: &Option<mime::Mime>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match m {
+            Some(m) => s.serialize_some(&m.to_string()),
+            None => s.serialize_none(),
+        }
     }
 }
 
@@ -156,62 +175,5 @@ pub mod duration {
         D: Deserializer<'de>,
     {
         Ok(deserializer.deserialize_option(DurationOptionVisitor::new(Unit::Seconds))?)
-    }
-}
-
-pub mod u32 {
-    //! Extensions for parsing [u32] and [Option<u32>](Option<T>) from string types.
-
-    use serde::{
-        de::{Error, Visitor},
-        Deserialize, Deserializer,
-    };
-    use std::{fmt, str};
-
-    struct U32OptionVisitor;
-
-    impl<'de> Visitor<'de> for U32OptionVisitor {
-        type Value = Option<u32>;
-
-        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-            write!(formatter, "a valid u32 integer")
-        }
-
-        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: Deserializer<'de>,
-        {
-            let s: &str = Deserialize::deserialize(deserializer)?;
-            Ok(Some(s.parse().map_err(D::Error::custom)?))
-        }
-
-        fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(None)
-        }
-
-        fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: Error,
-        {
-            Ok(None)
-        }
-    }
-
-    pub fn from_str<'de, D>(d: D) -> Result<u32, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: &str = Deserialize::deserialize(d)?;
-        Ok(s.parse().map_err(D::Error::custom)?)
-    }
-
-    pub fn from_str_option<'de, D>(d: D) -> Result<Option<u32>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        Ok(d.deserialize_option(U32OptionVisitor)?)
     }
 }
