@@ -112,7 +112,12 @@ async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
             }
         };
 
-        dest.write(vid.as_slice()).await?;
+        info!(
+            "Final vector is of length {}/{:?}",
+            &vid.len(),
+            &chosen.unwrap().size()
+        );
+        dest.write_all(vid.as_slice()).await?;
         println!("Completed download of video {}.", resp.details().id());
     }
 

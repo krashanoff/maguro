@@ -30,7 +30,9 @@ pub mod mime {
             D: Deserializer<'de>,
         {
             let s: String = Deserialize::deserialize(deserializer)?;
-            Ok(Some(mime::Mime::from_str(s.as_str()).map_err(Error::custom)?))
+            Ok(Some(
+                mime::Mime::from_str(s.as_str()).map_err(Error::custom)?,
+            ))
         }
 
         fn visit_none<E>(self) -> Result<Self::Value, E>
@@ -175,5 +177,62 @@ pub mod duration {
         D: Deserializer<'de>,
     {
         Ok(deserializer.deserialize_option(DurationOptionVisitor::new(Unit::Seconds))?)
+    }
+}
+
+pub mod u32 {
+    //! Extensions for parsing [u32] and [Option<u32>](Option<T>) from string types.
+
+    use serde::{
+        de::{Error, Visitor},
+        Deserialize, Deserializer,
+    };
+    use std::{fmt, str};
+
+    struct U32OptionVisitor;
+
+    impl<'de> Visitor<'de> for U32OptionVisitor {
+        type Value = Option<u32>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            write!(formatter, "a valid u32 integer")
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            let s: &str = Deserialize::deserialize(deserializer)?;
+            Ok(Some(s.parse().map_err(D::Error::custom)?))
+        }
+
+        fn visit_none<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+
+        fn visit_unit<E>(self) -> Result<Self::Value, E>
+        where
+            E: Error,
+        {
+            Ok(None)
+        }
+    }
+
+    pub fn from_str<'de, D>(d: D) -> Result<u32, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s: &str = Deserialize::deserialize(d)?;
+        Ok(s.parse().map_err(D::Error::custom)?)
+    }
+
+    pub fn from_str_option<'de, D>(d: D) -> Result<Option<u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(d.deserialize_option(U32OptionVisitor)?)
     }
 }
