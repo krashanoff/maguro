@@ -42,16 +42,9 @@ use std::{
 };
 use tokio::{fs::File, io::AsyncWriteExt};
 
-mod dash;
-pub mod serde;
-
-/// Endpoint to request against.
-const ENDPOINT_URI: &'static str = "https://www.youtube.com/get_video_info";
-
-/// Form an endpoint URI for the given video ID.
-fn endpoint_from_id<T: Display>(id: T) -> String {
-    format!("{}?video_id={}", ENDPOINT_URI, id)
-}
+pub mod dash;
+pub mod query;
+mod serde;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 /// Describes a single streaming format for a YouTube video.
@@ -64,8 +57,12 @@ pub struct Format {
     width: Option<u32>,
     height: Option<u32>,
 
-    #[serde(rename = "mimeType")]
-    mime_type: String,
+    #[serde(
+        rename = "mimeType",
+        deserialize_with = "serde::mime::from_str",
+        serialize_with = "serde::mime::to_str"
+    )]
+    mime_type: mime::Mime,
 
     #[serde(
         default,
@@ -254,13 +251,17 @@ struct InfoWrapper {
     pub player_response: String,
 }
 
-/// Acquires the [InfoResponse] struct for a given video ID.
+/// Acquires the [InfoResponse] for a given video ID.
 pub async fn get_video_info(id: &str) -> Result<InfoResponse, Box<dyn error::Error>> {
     let https = HttpsConnector::new();
     let client = Client::builder().build::<_, hyper::Body>(https);
 
     let mut res = client
-        .get(endpoint_from_id(id).parse().unwrap())
+        .get(
+            format!("https://www.youtube.com/get_video_info?video_id={}", id)
+                .parse()
+                .unwrap(),
+        )
         .await
         .unwrap();
     let body = body::to_bytes(res.body_mut()).await.unwrap();
@@ -268,4 +269,22 @@ pub async fn get_video_info(id: &str) -> Result<InfoResponse, Box<dyn error::Err
     let stream_info: InfoResponse =
         serde_json::from_str(&serde_urlencoded::from_bytes::<InfoWrapper>(&body)?.player_response)?;
     Ok(stream_info)
+}
+
+/// Acquires the [InfoResponses](InfoResponse) for a given set of video, playlist,
+/// or channel IDs.
+pub async fn videos_from(query: &query::Query) -> Result<Vec<InfoResponse>, Box<dyn error::Error>> {
+    let https = HttpsConnector::new();
+    let client = Client::builder().build::<_, hyper::Body>(https);
+
+    let mut info: Vec<InfoResponse> = Vec::new();
+    for url in query.urls().await? {
+        let mut res = client.get(url.parse().unwrap()).await.unwrap();
+        let body = body::to_bytes(res.body_mut()).await.unwrap();
+        info.push(serde_json::from_str(
+            &serde_urlencoded::from_bytes::<InfoWrapper>(&body)?.player_response,
+        )?);
+    }
+
+    Ok(info)
 }
