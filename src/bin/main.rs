@@ -28,17 +28,17 @@ mod maglog {
 
 static LOGGER: maglog::MagnetLogger = maglog::MagnetLogger;
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
     let matches = clap_app!(maguro =>
-        (version: "0.0.1")
+        (version: "0.0.2")
         (author: "krashanoff <leo@krashanoff.com>")
         (about: "A fast YouTube downloader.")
         (@arg verbose: -v ... "Increases program verbosity")
         (@arg show_formats: -F --formats "Display formats available for download and exit")
         (@arg format: -f +takes_value "Downloads a specific format by `itag`. Defaults to highest quality.")
-        (@arg output: -o --output +takes_value +required "Outputs videos with the given file extension")
-        (@arg VIDEOS: ... +required "Video(s) to download or introspect on")
+        (@arg output: -o --output +takes_value "Outputs the selected stream to the given file")
+        (@arg VIDEOS: +required "Video to download or introspect on")
     )
     .get_matches();
 
@@ -58,7 +58,6 @@ async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
         .values_of("VIDEOS")
         .unwrap_or_else(|| panic!("A list of video IDs is required!"))
         .collect();
-    let ext = matches.value_of("output").unwrap();
 
     let mut info: Vec<maguro::InfoResponse> = Vec::new();
     while let Some(id) = ids.pop() {
@@ -71,9 +70,10 @@ async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
     if matches.is_present("show_formats") {
         for resp in info {
             println!(
-                "Displaying available formats for video ID {}:",
+                "Displaying available streaming formats for video ID {}:",
                 resp.details().id()
             );
+
             for format in &resp.all_formats() {
                 println!("{}", format);
             }
@@ -89,7 +89,13 @@ async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
             .read(false)
             .write(true)
             .create(true)
-            .open(format!("{}.{}", resp.details().id(), ext))
+            .open(format!(
+                "{}",
+                &matches.value_of("output").unwrap_or_else(|| {
+                    println!("Please specify an output file.");
+                    exit(1)
+                })
+            ))
             .await?;
 
         let formats = resp.all_formats();
@@ -98,26 +104,20 @@ async fn main() -> Result<(), Box<(dyn error::Error + 'static)>> {
             None => formats.last(),
         };
 
-        let vid = match chosen {
-            Some(f) => f
-                .to_vec_callback(|b| {
-                    info!("Downloaded {} bytes...", b.len());
-                    Ok(())
-                })
-                .await
-                .unwrap(),
+        match chosen {
+            Some(f) => {
+                println!("Downloading...");
+                if let Err(e) = f.download(&mut dest).await {
+                    error!("{}", e);
+                    exit(1)
+                }
+            }
             None => {
                 error!("Failed to find selected itag!");
                 exit(1)
             }
         };
 
-        info!(
-            "Final vector is of length {}/{:?}",
-            &vid.len(),
-            &chosen.unwrap().size()
-        );
-        dest.write_all(vid.as_slice()).await?;
         println!("Completed download of video {}.", resp.details().id());
     }
 

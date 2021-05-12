@@ -55,8 +55,8 @@ pub mod mime {
     where
         D: Deserializer<'de>,
     {
-        let s: &str = Deserialize::deserialize(d)?;
-        Ok(mime::Mime::from_str(s).map_err(Error::custom)?)
+        let s: String = Deserialize::deserialize(d)?;
+        Ok(mime::Mime::from_str(s.as_str()).map_err(Error::custom)?)
     }
 
     /// Serialize a [mime::Mime] to a string.

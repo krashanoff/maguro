@@ -35,6 +35,7 @@ use hyper::{
 };
 use hyper_tls::HttpsConnector;
 use std::{
+    cmp::Ordering,
     error,
     fmt::{self, Display},
     str,
@@ -46,7 +47,7 @@ pub mod dash;
 pub mod query;
 mod serde;
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Eq)]
 /// Describes a single streaming format for a YouTube video.
 pub struct Format {
     itag: u32,
@@ -93,12 +94,19 @@ impl Format {
         }
     }
 
+    /// This [Format]'s associated itag.
     pub fn itag(&self) -> u32 {
         self.itag
     }
 
+    /// Content length of the [Format].
     pub fn size(&self) -> Option<u32> {
         self.content_length.clone()
+    }
+
+    /// Returns the URL to download the [Format].
+    pub fn url(&self) -> String {
+        self.url.clone()
     }
 
     /// Read the entire YouTube video into a vector.
@@ -151,9 +159,27 @@ impl Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "itag: {:03}\tQuality: {}\tMime Type: {}",
+            "itag: {:>3} | Quality: {:<7} | Mime Type: {:<20}",
             self.itag, self.quality, self.mime_type
         )
+    }
+}
+
+impl Ord for Format {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.itag.cmp(&other.itag)
+    }
+}
+
+impl PartialEq for Format {
+    fn eq(&self, other: &Self) -> bool {
+        self.itag.eq(&other.itag)
+    }
+}
+
+impl PartialOrd for Format {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.itag.cmp(&other.itag))
     }
 }
 
@@ -218,20 +244,33 @@ pub struct InfoResponse {
 }
 
 impl InfoResponse {
+    /// `itag`-ordered vector of streaming formats available for the given
+    /// video.
     pub fn formats(&self) -> Option<Vec<Format>> {
-        self.streaming_data.formats.clone()
+        match self.streaming_data.formats.clone() {
+            Some(mut s) => {
+                s.sort();
+                Some(s)
+            }
+            None => None,
+        }
     }
 
+    /// `itag`-ordered vector of adaptive streaming formats available
+    /// for the given video.
     pub fn adaptive_formats(&self) -> Vec<Format> {
-        self.streaming_data.adaptive_formats.clone()
+        let mut sorted = self.streaming_data.adaptive_formats.clone();
+        sorted.sort();
+        sorted
     }
 
+    /// Details for the video.
     pub fn details(&self) -> VideoDetails {
         self.video_details.clone()
     }
 
-    /// Returns a vector of all formats available for the given
-    /// video.
+    /// Vector of all formats available for the given video.
+    /// Order is not guaranteed.
     pub fn all_formats(&self) -> Vec<Format> {
         if let Some(fmts) = self.formats() {
             return fmts
