@@ -50,12 +50,13 @@ pub mod mime {
         }
     }
 
-    /// Deserialize an `Option<mime::Mime>` from a string.
-    pub fn option_from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
+    /// Deserialize a [mime::Mime] from a string.
+    pub fn from_str<'de, D>(d: D) -> Result<mime::Mime, D::Error>
     where
         D: Deserializer<'de>,
     {
-        Ok(deserializer.deserialize_option(MimeOptionVisitor)?)
+        let s: &str = Deserialize::deserialize(d)?;
+        Ok(mime::Mime::from_str(s).map_err(Error::custom)?)
     }
 
     /// Serialize a [mime::Mime] to a string.
@@ -66,6 +67,15 @@ pub mod mime {
         s.serialize_str(m.to_string().as_str())
     }
 
+    /// Deserialize an `Option<mime::Mime>` from a string.
+    pub fn option_from_str<'de, D>(deserializer: D) -> Result<Option<mime::Mime>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(deserializer.deserialize_option(MimeOptionVisitor)?)
+    }
+
+    /// Serialize an `Option<mime::Mime>` to a string.
     pub fn option_to_str<S>(m: &Option<mime::Mime>, s: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
