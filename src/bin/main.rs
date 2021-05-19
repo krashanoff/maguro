@@ -1,7 +1,7 @@
 use clap::clap_app;
 use log::{error, info, LevelFilter};
 use std::{error, process::exit};
-use tokio::{fs::OpenOptions, io::AsyncWriteExt};
+use tokio::{fs::OpenOptions};
 
 use maguro;
 

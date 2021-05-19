@@ -34,6 +34,7 @@ use hyper::{
     Client,
 };
 use hyper_tls::HttpsConnector;
+use log::info;
 use std::{
     cmp::Ordering,
     error,
@@ -147,8 +148,17 @@ impl Format {
 
         let mut res = client.get(self.url.parse().unwrap()).await.unwrap();
 
+        let mut written: usize = 0;
         while let Some(chunk) = res.body_mut().data().await {
-            dest.write(&chunk?).await?;
+            written += dest.write(&chunk?).await?;
+            info!(
+                "Wrote {} of {} bytes",
+                written,
+                match self.content_length {
+                    Some(l) => format!("{}", l),
+                    None => "Unknown".to_string(),
+                }
+            )
         }
 
         Ok(())
