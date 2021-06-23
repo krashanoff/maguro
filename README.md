@@ -1,6 +1,12 @@
 # maguro 🐟
 
-A fast YouTube downloader.
+A fast downloader for streaming media.
+
+## ⚠ WARNING ⚠
+
+maguro is no longer under development. It started as a simple proof-of-concept
+that I didn't have much time to dedicate to, and now that YouTube's undocumented
+APIs have changed, it likely no longer works.
 
 ## Using the CLI
 
